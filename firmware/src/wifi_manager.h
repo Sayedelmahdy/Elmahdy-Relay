@@ -145,6 +145,21 @@ public:
     /** Current FSM state — useful for exposing status over the web API. */
     WifiState getState() const { return _state; }
 
+    /** True when mDNS is enabled in config and the responder is running. */
+    bool isMdnsRunning() const { return _mdnsRunning; }
+
+    /** True when mDNS is enabled in system config. */
+    bool isMdnsEnabled() const;
+
+    /** Current configured mDNS hostname without the ".local" suffix. */
+    String getMdnsHostname() const;
+
+    /** Current configured mDNS URL, or an empty string when disabled. */
+    String getMdnsUrl() const;
+
+    /** Re-apply mDNS config after hostname or enabled setting changes. */
+    void refreshMdns();
+
     /* Callback -------------------------------------------------------------- */
 
     /**
@@ -177,6 +192,10 @@ private:
 
     /* Reconnect flag: true once we have successfully connected at least once  */
     bool _hadConnection = false;
+
+    /* mDNS runtime state ---------------------------------------------------- */
+    bool   _mdnsRunning = false;
+    String _mdnsHostname;
 
     /* Callback -------------------------------------------------------------- */
     std::function<void()> _onConnected;

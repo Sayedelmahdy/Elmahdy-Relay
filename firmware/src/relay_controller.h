@@ -38,7 +38,8 @@ struct RelayChannel {
     uint8_t  interlockGroup;  // 0 = no interlock; 1-255 = group id
 
     // Runtime state (not persisted in relays.json)
-    bool     state;           // Current ON/OFF
+    bool     state;           // Logical target ON/OFF
+    bool     gpioState;       // Actual physical GPIO level (logical)
     uint32_t pulseEndTime;    // millis() deadline; 0 = no active pulse
 };
 
@@ -81,9 +82,16 @@ public:
 
     /*
      * setAll() — applies newState to every configured channel.
-     * Interlock enforcement runs per-channel inside setState().
+     * Hardware actions are batched to ensure simultaneous physical clicking.
      */
     void setAll(bool newState);
+
+    /*
+     * Batch operations — use these to change multiple relays at once
+     * with only ONE Flash write and one physical action group.
+     */
+    void startBatch();
+    void endBatch();
 
     /*
      * getState() — returns current in-memory ON/OFF for a 1-based channel.
@@ -127,6 +135,13 @@ private:
     // Optional state-change notification callback.
     std::function<void(uint8_t, bool)> _onStateChange;
 
+    bool     _isBatchMode     = false;
+    bool     _staggerActive   = false;
+    uint32_t _lastStaggerMs   = 0;
+    bool     _targetStates[MAX_CHANNELS];
+    bool     _statePersistPending = false;
+    uint32_t _lastStateChangeMs   = 0;
+
     /*
      * _findByChannel() — internal lookup by 1-based channel id.
      * Returns nullptr if not found.
@@ -145,6 +160,7 @@ private:
      * /relays_state.json via ConfigManager.
      */
     void _persistState();
+    void _schedulePersistState();
 
     /*
      * _loadLastState() — reads /relays_state.json and returns the stored

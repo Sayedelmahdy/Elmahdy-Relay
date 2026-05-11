@@ -56,7 +56,7 @@ void MqttManager::begin(ConfigManager& config, RelayController& relay) {
     // ── Read MQTT settings from in-memory config doc ─────────────────────────
     const JsonDocument& mDoc = _config->mqttConfig();
     _enabled  = mDoc["enabled"]  | false;
-    _broker   = mDoc["broker"]   | "broker.hivemq.com";
+    _broker   = mDoc["broker"]   | "broker.emqx.io";
     _port     = mDoc["port"]     | static_cast<uint16_t>(1883);
     _username = mDoc["username"] | "";
     _password = mDoc["password"] | "";
@@ -64,7 +64,7 @@ void MqttManager::begin(ConfigManager& config, RelayController& relay) {
 
     if (!_enabled) {
         Serial.println(F("[MQTT] Disabled in config — skipping init"));
-        return;
+        // Keep callbacks configured so MQTT can be enabled from the dashboard.
     }
 
     // ── Build device_id from MAC: "elmahdy_relay_" + MAC without colons ──────
@@ -73,23 +73,24 @@ void MqttManager::begin(ConfigManager& config, RelayController& relay) {
         String mac = WiFi.macAddress();
         mac.replace(":", "");
         mac.toLowerCase();
-        _deviceId = "elmahdy_relay_" + mac;
+        // MQTT 3.1.1 max Client ID length is 23 characters.
+        // "ER_" (3) + MAC (12) = 15 characters, which is safe.
+        _deviceId = "ER_" + mac;
     }
 
     // ── Configure AsyncMqttClient ─────────────────────────────────────────────
     _mqtt.setServer(_broker.c_str(), _port);
+    _mqtt.setClientId(_deviceId.c_str());   // unique per device (MAC-based)
+    _mqtt.setCredentials(
+        _username.length() ? _username.c_str() : nullptr,
+        _password.length() ? _password.c_str() : nullptr);
     _mqtt.setKeepAlive(15);
     _mqtt.setCleanSession(true);
 
-    if (_username.length() > 0) {
-        _mqtt.setCredentials(_username.c_str(),
-                             _password.length() > 0 ? _password.c_str() : nullptr);
-    }
-
     // LWT: {prefix}/system/status = "offline", QoS 1, retained
     {
-        String lwtTopic = _buildTopic("system/status");
-        _mqtt.setWill(lwtTopic.c_str(), 1, true, "offline");
+        _lwtTopic = _buildTopic("system/status");
+        _mqtt.setWill(_lwtTopic.c_str(), 1, true, "offline");
     }
 
     // ── Register AsyncMqttClient callbacks ────────────────────────────────────
@@ -116,9 +117,68 @@ void MqttManager::begin(ConfigManager& config, RelayController& relay) {
         publishRelayState(ch, state);
     });
 
-    // ── First connect attempt ─────────────────────────────────────────────────
-    Serial.printf("[MQTT] Connecting to %s:%u\n", _broker.c_str(), _port);
-    _mqtt.connect();
+    // ── First connect attempt (deferred until Wi-Fi is up) ────────────────────
+    if (_enabled) {
+        Serial.printf("[MQTT] Will connect to %s:%u when Wi-Fi is ready\n", _broker.c_str(), _port);
+        _scheduleReconnect();
+    }
+}
+
+void MqttManager::_loadConfig() {
+    if (!_config) return;
+    const JsonDocument& mDoc = _config->mqttConfig();
+    _enabled  = mDoc["enabled"]  | false;
+    _broker   = mDoc["broker"]   | "broker.emqx.io";
+    _port     = mDoc["port"]     | static_cast<uint16_t>(1883);
+    _username = "";
+    _password = "";
+    _prefix   = mDoc["prefix"]   | "elmahdy";
+    _prefix.trim();
+    _prefix.replace(" ", "");
+    if (_prefix.length() == 0) {
+        _prefix = "elmahdy";
+    }
+}
+
+void MqttManager::_configureClient() {
+    _mqtt.setServer(_broker.c_str(), _port);
+    _mqtt.setClientId(_deviceId.c_str());
+    _mqtt.setCredentials(
+        _username.length() ? _username.c_str() : nullptr,
+        _password.length() ? _password.c_str() : nullptr);
+    _mqtt.setKeepAlive(15);
+    _mqtt.setCleanSession(true);
+
+    _lwtTopic = _buildTopic("system/status");
+    _mqtt.setWill(_lwtTopic.c_str(), 1, true, "offline");
+}
+
+void MqttManager::reloadFromConfig() {
+    if (!_config) return;
+
+    _loadConfig();
+
+    // Forcefully disconnect if currently connected
+    if (_connected || _mqtt.connected()) {
+        _mqtt.disconnect(true);
+        _connected = false;
+    }
+
+    _reconnectPending = false;
+    _backoffMs = MQTT_BACKOFF_MIN_MS;
+    _configureClient();
+
+    if (!_enabled) {
+        Serial.println(F("[MQTT] Disabled in config"));
+        return;
+    }
+
+    // Defer reconnect by 500 ms so the TCP stack fully tears down before
+    // we initiate a new CONNECT to the (possibly new) broker.
+    Serial.printf("[MQTT] Reconnecting to %s:%u in 500 ms\n",
+                  _broker.c_str(), _port);
+    _reconnectPending    = true;
+    _backoffDeadlineMs   = millis() + 500UL;
 }
 
 /* ─────────────────────────────────────────────────────────────────────────────
@@ -131,9 +191,15 @@ void MqttManager::tick() {
     if (_reconnectPending && !_connected) {
         if (millis() >= _backoffDeadlineMs) {
             _reconnectPending = false;
-            Serial.printf("[MQTT] Reconnecting (backoff %u ms elapsed)...\n",
-                          _backoffMs);
-            _mqtt.connect();
+            
+            if (WiFi.isConnected()) {
+                Serial.printf("[MQTT] Connecting to %s:%u (backoff %u ms)...\n",
+                              _broker.c_str(), _port, _backoffMs);
+                _mqtt.connect();
+            } else {
+                // Wi-Fi not ready, wait and try again
+                _scheduleReconnect();
+            }
         }
     }
 }
@@ -235,10 +301,15 @@ void MqttManager::_publishHaDiscovery() {
         snprintf(uniqueId, sizeof(uniqueId), "%s_%u",
                  _deviceId.c_str(), static_cast<unsigned>(ch));
 
-        // name: "Elmahdy Relay CH1"
-        char friendlyName[32];
-        snprintf(friendlyName, sizeof(friendlyName),
-                 "Elmahdy Relay CH%u", static_cast<unsigned>(ch));
+        // name: configured relay name, falling back to "Elmahdy Relay CH1"
+        char friendlyName[64];
+        const RelayChannel* channel = _relay ? _relay->getChannel(ch) : nullptr;
+        if (channel && channel->name[0] != '\0') {
+            snprintf(friendlyName, sizeof(friendlyName), "%s", channel->name);
+        } else {
+            snprintf(friendlyName, sizeof(friendlyName),
+                     "Elmahdy Relay CH%u", static_cast<unsigned>(ch));
+        }
 
         // ── Assemble JSON payload ─────────────────────────────────────────────
         // JsonDocument on the stack; serialise to String before leaving scope.

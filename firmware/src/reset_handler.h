@@ -17,8 +17,11 @@ private:
     uint8_t        _pin;
     bool           _enabled;
     bool           _lastState;
+    bool           _lastReading;
     bool           _pressed;
+    bool           _actionTaken;
     uint32_t       _pressStartMs;
+    uint32_t       _lastChangeMs;
     ConfigManager* _config;
 };
 

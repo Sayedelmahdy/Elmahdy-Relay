@@ -38,6 +38,7 @@ class WebSocketHandler;
 class SceneManager;
 class WiFiManager;
 class TimerEngine;
+class MqttManager;
 
 /* ─────────────────────────────────────────────────────────────────────────────
  * MIME type table
@@ -130,6 +131,8 @@ public:
      */
     void setSceneManager(SceneManager& scene);
 
+    void setMqttManager(MqttManager& mqtt);
+
     /*
      * server() — expose the underlying AsyncWebServer so that other modules
      * can attach their own routes (OtaHandler, relay API, config API, …)
@@ -175,6 +178,7 @@ private:
     WiFiManager*      _wifi;         // set via setWifiManager() after begin()
     TimerEngine*      _timerEngine;  // set via setTimerEngine() after begin()
     SceneManager*     _sceneManager; // set via setSceneManager() after begin()
+    MqttManager*      _mqttManager;  // set via setMqttManager() after begin()
 
     // The AsyncWebServer is heap-allocated in begin() to avoid consuming
     // ~2 KB of BSS before setup() runs.  The pointer is never null after

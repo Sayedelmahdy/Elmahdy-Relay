@@ -393,6 +393,11 @@ uint8_t TimerEngine::getTimers(JsonDocument& outDoc) const {
             obj["repeatMode"] = entry.repeatMode;
             obj["dayMask"]    = entry.dayMask;
             obj["remaining"]  = 0;
+            char tBuf[16];
+            int h = entry.hour % 12;
+            if (h == 0) h = 12;
+            snprintf(tBuf, sizeof(tBuf), "%02d:%02d %s", h, entry.minute, entry.hour >= 12 ? "PM" : "AM");
+            obj["time"]       = tBuf;
         } else {
             uint32_t delta     = now - entry.lastMillis;
             uint32_t remaining = (delta >= entry.remainingMs) ? 0 : (entry.remainingMs - delta);

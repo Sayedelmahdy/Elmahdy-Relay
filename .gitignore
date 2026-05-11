@@ -7,6 +7,13 @@ firmware/.gcc-flags.json
 # Minified/compressed web assets (build artifacts)
 firmware/data/www/*.min.*
 firmware/data/www/*.gz
+firmware/data/*.gz
+
+# Merged binary (build artifact — too large for git)
+firmware/elmahdy-relay-full.bin
+
+# Local provisioning secrets
+firmware/data/wifi.json
 
 # Node.js
 node_modules/
@@ -20,3 +27,13 @@ Thumbs.db
 .vscode/
 *.swp
 *~
+
+# AI agent config (local only)
+.agents/
+.claude/
+.codex/
+.specify/
+constitution-prompt.txt
+specify-prompt.txt
+AGENTS.md
+CLAUDE.md

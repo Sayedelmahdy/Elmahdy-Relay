@@ -66,6 +66,12 @@ public:
     void begin(ConfigManager& config, RelayController& relay);
 
     /*
+     * reloadFromConfig() — re-read broker/port/prefix from ConfigManager and
+     * reconnect immediately. Used after /api/config/mqtt saves settings.
+     */
+    void reloadFromConfig();
+
+    /*
      * tick() — must be called from loop() on every iteration.
      *
      * Drives the reconnect backoff state machine: if MQTT is enabled but
@@ -80,6 +86,10 @@ public:
      * subsequent onDisconnect has been received).
      */
     bool isConnected() const;
+    bool isEnabled() const { return _enabled; }
+    const String& broker() const { return _broker; }
+    uint16_t port() const { return _port; }
+    const String& prefix() const { return _prefix; }
 
     /*
      * publishRelayState() — publish `{prefix}/relay/{ch}/status` with
@@ -133,9 +143,11 @@ private:
     String   _password;
     String   _prefix;        // e.g. "elmahdy"
     String   _deviceId;      // "elmahdy_relay_" + MAC (no colons, lowercase)
+    String   _lwtTopic;      // Persist the Will Topic so setWill pointer remains valid
 
     /* ── Reconnect backoff ────────────────────────────────────────────────── */
     bool     _connected;          // mirrored from onConnect / onDisconnect
+    bool     _callbacksRegistered = false;
     uint32_t _backoffMs;          // current backoff interval
     uint32_t _backoffDeadlineMs;  // millis() target for next connect attempt
     bool     _reconnectPending;   // true when a timed reconnect is scheduled
@@ -155,6 +167,8 @@ private:
      * Example: _buildTopic("relay/1/status") → "elmahdy/relay/1/status"
      */
     String _buildTopic(const char* suffix) const;
+    void _loadConfig();
+    void _configureClient();
 
     /*
      * _publishHaDiscovery() — publish Home Assistant MQTT discovery payloads

@@ -141,6 +141,31 @@ bool ConfigManager::write(const char* filename, JsonDocument& doc) {
 }
 
 bool ConfigManager::readSection(const char* filename, JsonDocument& doc) {
+    if (_readAndValidateSectionFile(filename, doc)) {
+        return true;
+    }
+
+    String tmpPath = _tmpPath(filename);
+    if (!LittleFS.exists(tmpPath.c_str())) {
+        return false;
+    }
+
+    if (!_readAndValidateSectionFile(tmpPath.c_str(), doc)) {
+        return false;
+    }
+
+    Serial.printf("[CFG] Recovering %s from interrupted write %s\n",
+                  filename, tmpPath.c_str());
+    LittleFS.remove(filename);
+    if (!LittleFS.rename(tmpPath.c_str(), filename)) {
+        Serial.printf("[CFG] WARNING: recovered %s in RAM, rename failed\n",
+                      filename);
+    }
+    return true;
+}
+
+bool ConfigManager::_readAndValidateSectionFile(const char* filename,
+                                                JsonDocument& doc) {
     if (!LittleFS.exists(filename)) {
         return false;
     }
@@ -247,16 +272,18 @@ void ConfigManager::_defaultWifi() {
     _wifi.clear();
     _wifi["ssid"]       = "";
     _wifi["password"]   = "";
-    _wifi["staticIp"]   = "";
-    _wifi["gateway"]    = "";
+    _wifi["dhcp"]       = true;
+    _wifi["staticIp"]   = "192.168.1.50";
+    _wifi["gateway"]    = "192.168.1.1";
     _wifi["subnet"]     = "255.255.255.0";
+    _wifi["dns"]        = "8.8.8.8";
     _wifi["apPassword"] = AP_PASSWORD;  // "12345678" from config.h
 }
 
 void ConfigManager::_defaultMqtt() {
     _mqtt.clear();
-    _mqtt["enabled"]  = false;
-    _mqtt["broker"]   = "broker.hivemq.com";
+    _mqtt["enabled"]  = true;
+    _mqtt["broker"]   = "broker.emqx.io";
     _mqtt["port"]     = 1883;
     _mqtt["username"] = "";
     _mqtt["password"] = "";
@@ -312,10 +339,14 @@ void ConfigManager::_defaultSystem() {
     _system.clear();
     _system["buzzerEnabled"]   = true;
     _system["ledEnabled"]      = true;
-    _system["resetEnabled"]    = true;
+    // Disabled by default because RESET_PIN is GPIO16 on ESP8266. GPIO16 has
+    // no internal pull-up, so an unwired reset input can float low under relay
+    // noise and look like a long factory-reset press.
+    _system["resetEnabled"]    = false;
     _system["buzzerPin"]       = BUZZER_PIN;  // 13
     _system["resetPin"]        = RESET_PIN;   // 16
     _system["hostname"]        = "elmahdyrelay";
+    _system["mdnsEnabled"]     = true;
     _system["language"]        = "ar";
     _system["timezoneOffset"]  = 120;
 }

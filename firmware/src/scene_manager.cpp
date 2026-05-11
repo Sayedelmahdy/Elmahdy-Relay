@@ -47,6 +47,7 @@ bool SceneManager::activate(const char* name) {
     JsonObject scene  = arr[idx].as<JsonObject>();
     JsonObject states = scene["states"].as<JsonObject>();
 
+    _relay->startBatch();
     for (JsonPair kv : states) {
         int ch = atoi(kv.key().c_str());
         if (ch < 1) { continue; }
@@ -54,6 +55,7 @@ bool SceneManager::activate(const char* name) {
         bool on = (strcmp(val, "on") == 0);
         _relay->setState(static_cast<uint8_t>(ch), on);
     }
+    _relay->endBatch();
     return true;
 }
 

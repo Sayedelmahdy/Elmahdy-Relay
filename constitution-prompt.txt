@@ -22,6 +22,7 @@ Technology Stack:
 - All web assets minified and GZIP-compressed, stored in LittleFS, served with Content-Encoding: gzip
 - No external CDN dependencies — device must work 100% offline on local network
 - Build with -Os (optimize for size), strip debug symbols in production
+- API-First Design: All device functionality exposed via REST API + WebSocket. The built-in web UI is just one client — any external mobile app (Flutter, React Native, native Android/iOS), desktop app, or third-party integration can use the same API endpoints. CORS headers (Access-Control-Allow-Origin: *) enabled on all API responses so external applications on any origin can access the device.
 
 Default GPIO Pin Assignment (NodeMCU):
 - D1 (GPIO5) = Relay 1
@@ -48,7 +49,7 @@ V. Resilient Configuration Storage (NON-NEGOTIABLE): All config stored in Little
 
 VI. Full Bilingual Support (Arabic & English): Every UI string, label, button, message, error, and notification must exist in both Arabic and English. Language strings stored as JSON language packs in LittleFS (lang_ar.json, lang_en.json). Arabic mode enables full RTL layout (CSS direction: rtl). Language switchable from UI header, persisted to config. Default language: Arabic.
 
-VII. MQTT Integration: Default broker: broker.hivemq.com, default port: 1883. All configurable: broker address, port, username, password, prefix. Topic structure: {prefix}/relay/{channel}/control (receive ON/OFF/TOGGLE), {prefix}/relay/{channel}/status (publish state), {prefix}/relay/all/control (control all), {prefix}/relay/all/status (all states), {prefix}/system/status (LWT online/offline), {prefix}/system/info (version, uptime, RSSI, IP), {prefix}/timer/{id}/control, {prefix}/scene/{name}/control. Auto-reconnect with exponential backoff. Last Will and Testament for offline detection. Home Assistant MQTT Auto-Discovery: publish HA-compatible discovery messages on boot so Home Assistant automatically detects the device with zero configuration.
+VII. MQTT Integration: Default broker: broker.hivemq.com, default port: 1883. All configurable: broker address, port, username, password, prefix. Default prefix: "elmahdy" (so topics default to elmahdy/relay/1/control etc). User can change the prefix to anything they want. Topic structure: {prefix}/relay/{channel}/control (receive ON/OFF/TOGGLE), {prefix}/relay/{channel}/status (publish state), {prefix}/relay/all/control (control all), {prefix}/relay/all/status (all states), {prefix}/system/status (LWT online/offline), {prefix}/system/info (version, uptime, RSSI, IP), {prefix}/timer/{id}/control, {prefix}/scene/{name}/control. Auto-reconnect with exponential backoff. Last Will and Testament for offline detection. Home Assistant MQTT Auto-Discovery: publish HA-compatible discovery messages on boot so Home Assistant automatically detects the device with zero configuration.
 
 Feature Set:
 
@@ -73,6 +74,8 @@ Backup & Restore: Export all device configuration as a single JSON file download
 Additional Production Features: Watchdog timer (hardware WDT enabled, auto-reboot on firmware hang). mDNS discovery (elmahdyrelay.local, hostname configurable). NTP sync (auto on WiFi connect, timezone configurable). Uptime counter (continuous operation time on dashboard). WiFi RSSI display (signal strength bars on dashboard). Pulse/inching mode per channel (relay ON for configured duration then auto-OFF, for garage doors etc). Interlock groups (define relay groups where only one can be ON at a time, for motor/curtain safety). Power-on state per channel (Last State / Always ON / Always OFF / Toggle). Home Assistant MQTT Auto-Discovery (automatic device detection in Home Assistant).
 
 API Endpoints (REST + WebSocket):
+All API endpoints return JSON responses with CORS headers (Access-Control-Allow-Origin: *) so any external mobile app or third-party application can consume them. The built-in web UI uses the exact same API — it is not special.
+- GET /api/info — API version, device name, available endpoints list, firmware version (for app developers to discover capabilities)
 - GET /api/status — all relay states + system info
 - POST /api/relay/{ch} — control single relay (body: {"state":"on/off/toggle"})
 - POST /api/relay/all — control all relays
@@ -109,6 +112,7 @@ Security:
 - MQTT supports username/password authentication
 - No sensitive data transmitted in MQTT topics
 - OTA update requires local network access only (no cloud OTA)
+- CORS enabled (Access-Control-Allow-Origin: *) on all /api/ endpoints to allow external app access
 
 Quality Standards:
 - Device boots to functional state in < 5 seconds

@@ -104,13 +104,43 @@ void WiFiManager::tick() {
         case WifiState::CONNECTED:
             _tickConnected();
             // Step 3: Update mDNS while STA is up.
-            MDNS.update();
+            if (_mdnsRunning) {
+                MDNS.update();
+            }
             break;
 
         case WifiState::IDLE:
         case WifiState::FAILED:
             // Nothing to drive — AP keeps serving without STA.
             break;
+    }
+}
+
+String WiFiManager::getMdnsHostname() const {
+    if (_config) {
+        return String(_config->systemConfig()["hostname"] | "elmahdyrelay");
+    }
+    return String(F("elmahdyrelay"));
+}
+
+bool WiFiManager::isMdnsEnabled() const {
+    return _config ? (_config->systemConfig()["mdnsEnabled"] | true) : true;
+}
+
+String WiFiManager::getMdnsUrl() const {
+    if (!isMdnsEnabled()) {
+        return String();
+    }
+    return String(F("http://")) + getMdnsHostname() + F(".local");
+}
+
+void WiFiManager::refreshMdns() {
+    if (isConnected()) {
+        _registerMdns();
+    } else {
+        MDNS.close();
+        _mdnsRunning = false;
+        _mdnsHostname = getMdnsHostname();
     }
 }
 
@@ -139,11 +169,11 @@ void WiFiManager::connectSTA(const char* ssid, const char* password) {
  * Public: scan()
  * ───────────────────────────────────────────────────────────────────────────── */
 void WiFiManager::scan() {
-    // WIFI_SCAN_ASYNC (true) and WIFI_SCAN_FAILED_NEW (true) ensure:
-    //   - scan runs entirely in the background (non-blocking).
-    //   - a new scan cancels any in-progress scan cleanly.
-    WiFi.scanNetworks(/*async=*/false, /*show_hidden=*/false);
-    Serial.println(F("[WiFi] Sync scan complete"));
+    // Fire-and-forget: starts an async scan and returns immediately.
+    // The caller must poll getScanResults() or WiFi.scanComplete() for completion.
+    // Never call delay() here — this runs inside an ESPAsyncWebServer callback.
+    WiFi.scanNetworks(/*async=*/true, /*show_hidden=*/false);
+    Serial.println(F("[WiFi] Async scan started"));
 }
 
 /* ─────────────────────────────────────────────────────────────────────────────
@@ -203,6 +233,14 @@ String WiFiManager::getScanResults() const {
  * Private: _buildApSsid()
  * ───────────────────────────────────────────────────────────────────────────── */
 void WiFiManager::_buildApSsid() {
+    if (_config) {
+        const char* customApSsid = _config->wifiConfig()["apSsid"] | "";
+        if (customApSsid[0] != '\0') {
+            _apSsid = String(customApSsid);
+            return;
+        }
+    }
+
     // WiFi.macAddress() → e.g. "A4:CF:12:AB:CD:EF"
     // Strip colons and take the last 4 hex characters → "CDEF".
     String mac = WiFi.macAddress();
@@ -249,10 +287,28 @@ void WiFiManager::_startAp() {
  * Private: _beginConnect()
  * ───────────────────────────────────────────────────────────────────────────── */
 void WiFiManager::_beginConnect() {
-    // Disconnect any previous STA association cleanly before starting a new
-    // handshake.  false = do not erase stored credentials in the SDK NVRAM
-    // (irrelevant here since we manage credentials ourselves).
     WiFi.disconnect(/*wifioff=*/false);
+
+    // Apply static IP when requested; otherwise reset STA to DHCP.
+    const JsonDocument& wifiDoc = _config->wifiConfig();
+    const bool useDhcp = wifiDoc["dhcp"] | true;
+    const char* staticIp = wifiDoc["staticIp"] | "";
+    if (!useDhcp && strlen(staticIp) > 0) {
+        IPAddress ip, gw, sn, dns1;
+        ip.fromString(staticIp);
+        gw.fromString(wifiDoc["gateway"] | "192.168.1.1");
+        sn.fromString(wifiDoc["subnet"] | "255.255.255.0");
+        dns1.fromString(wifiDoc["dns"] | "8.8.8.8");
+        WiFi.config(ip, gw, sn, dns1);
+        Serial.printf_P(PSTR("[WiFi] Static IP: %s gateway=%s dns=%s\n"),
+                        staticIp,
+                        (wifiDoc["gateway"] | "192.168.1.1"),
+                        (wifiDoc["dns"] | "8.8.8.8"));
+    } else {
+        // Reset to DHCP in case a previous static config was applied.
+        WiFi.config(IPAddress(), IPAddress(), IPAddress());
+        Serial.println(F("[WiFi] DHCP enabled"));
+    }
 
     Serial.printf_P(PSTR("[WiFi] Attempt %u/%u: connecting to '%s'\n"),
                     static_cast<unsigned>(_retryCount + 1),
@@ -294,11 +350,11 @@ void WiFiManager::_tickConnecting() {
         _registerMdns();
 
         // T037 — NTP: configure SNTP servers; sync happens asynchronously.
-        // The timezone offset (integer hours east of UTC) comes from system config.
+        // timezoneOffset is stored in minutes (e.g. 120 = UTC+2 for Egypt).
         {
             const JsonDocument& sys = _config->systemConfig();
             const int32_t ntpOffsetSec =
-                static_cast<int32_t>(sys["ntpOffset"] | 0) * 3600;
+                static_cast<int32_t>(sys["timezoneOffset"] | 120) * 60;
             configTime(ntpOffsetSec, 0, "pool.ntp.org", "time.nist.gov");
             Serial.println(F("[WiFi] NTP sync started"));
         }
@@ -343,6 +399,10 @@ void WiFiManager::_tickConnected() {
 
     // Unexpected disconnect.
     Serial.println(F("[WiFi] STA link lost — initiating auto-reconnect"));
+    if (_mdnsRunning) {
+        MDNS.close();
+        _mdnsRunning = false;
+    }
 
     // Reload credentials from config for the reconnect attempt.
     const JsonDocument& wifiDoc = _config->wifiConfig();
@@ -387,12 +447,21 @@ void WiFiManager::_saveCredentials() {
  * wires in LanguageManager and the system config screen is live.
  * ───────────────────────────────────────────────────────────────────────────── */
 void WiFiManager::_registerMdns() {
-    const char* hostname = _config
-        ? (_config->systemConfig()["hostname"] | "elmahdyrelay")
-        : "elmahdyrelay";
+    _mdnsRunning = false;
+    _mdnsHostname = getMdnsHostname();
+
+    if (!isMdnsEnabled()) {
+        MDNS.close();
+        Serial.println(F("[WiFi] mDNS disabled"));
+        return;
+    }
+
+    MDNS.close();
+    const char* hostname = _mdnsHostname.c_str();
 
     if (MDNS.begin(hostname)) {
         MDNS.addService("http", "tcp", 80);
+        _mdnsRunning = true;
         Serial.printf_P(PSTR("[WiFi] mDNS: http://%s.local\n"), hostname);
     } else {
         Serial.println(F("[WiFi] WARNING: mDNS.begin() failed"));

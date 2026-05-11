@@ -1,7 +1,6 @@
 {
   "app.title": "Elmahdy Smart Relay",
   "app.name": "Elmahdy Relay",
-
   "tab.dashboard": "Dashboard",
   "tab.wifi": "WiFi",
   "tab.mqtt": "MQTT",
@@ -18,13 +17,11 @@
   "nav.scenes": "Scenes",
   "nav.system": "System",
   "nav.about": "About",
-
   "relay.on": "ON",
   "relay.off": "OFF",
   "relay.toggle": "Toggle",
   "relay.allOn": "All ON",
   "relay.allOff": "All OFF",
-
   "relays.title": "Relay Settings",
   "relays.channelCount": "Channel Count",
   "relays.saveCount": "Apply",
@@ -32,6 +29,8 @@
   "relays.gpio": "GPIO Pin",
   "relays.name": "Name",
   "relays.namePlaceholder": "Channel name",
+  "relays.rename": "Rename",
+  "relays.saveName": "Save name",
   "relays.powerOnState": "Power-on State",
   "relays.powerOnLast": "Last State",
   "relays.powerOnOn": "Always ON",
@@ -49,7 +48,6 @@
   "relays.gpioWarningPins": "Affected pins:",
   "relays.gpioConfirm": "Confirm",
   "relays.gpioCancel": "Cancel",
-
   "wifi.title": "WiFi Setup",
   "wifi.ssid": "Network Name",
   "wifi.currentSsid": "Connected to",
@@ -66,7 +64,6 @@
   "wifi.saved": "Connected successfully",
   "wifi.saveFailed": "Connection failed",
   "wifi.noSsid": "Please select a network",
-
   "mqtt.title": "MQTT Settings",
   "mqtt.enable": "Enable MQTT",
   "mqtt.enabled": "Enable MQTT",
@@ -81,7 +78,7 @@
   "mqtt.save": "Save",
   "mqtt.saved": "Saved",
   "mqtt.saveFailed": "Save failed",
-
+  "mqtt.topicContract": "Topic contract",
   "timer.title": "Timers",
   "timer.newCountdown": "New Countdown",
   "timer.newScheduled": "New Scheduled",
@@ -112,7 +109,6 @@
   "timer.repeat.weekdays": "Weekdays",
   "timer.repeat.weekend": "Weekend",
   "timer.repeat.custom": "Custom days",
-
   "day.sun": "Sun",
   "day.mon": "Mon",
   "day.tue": "Tue",
@@ -120,7 +116,6 @@
   "day.thu": "Thu",
   "day.fri": "Fri",
   "day.sat": "Sat",
-
   "scene.title": "Scenes",
   "scene.create": "Create Scene",
   "scene.name": "Scene Name",
@@ -139,7 +134,6 @@
   "scene.confirmDelete": "Delete this scene?",
   "scene.saved": "Saved",
   "scene.saveFailed": "Save failed",
-
   "system.title": "System Settings",
   "system.hardware": "Hardware",
   "system.network": "Network",
@@ -164,7 +158,6 @@
   "system.rebootConfirm": "Reboot the device?",
   "system.factoryReset": "Factory Reset",
   "system.factoryResetConfirm": "All settings will be erased. Are you sure?",
-
   "ota.title": "Firmware Update",
   "ota.selectFile": "Select .bin file",
   "ota.upload": "Upload",
@@ -174,7 +167,6 @@
   "system.ota.uploading": "Uploading...",
   "system.ota.success": "Update complete. Rebooting...",
   "system.ota.failed": "Update failed",
-
   "backup.title": "Backup & Restore",
   "backup.download": "Download Backup",
   "backup.restore": "Restore",
@@ -182,7 +174,6 @@
   "system.backup": "Backup",
   "system.restore": "Restore",
   "system.restoreConfirm": "Current settings will be replaced. Are you sure?",
-
   "about.title": "About",
   "about.name": "Elmahdy Relay",
   "about.tagline": "IoT Smart Relay Controller",
@@ -194,15 +185,26 @@
   "about.ipAddress": "IP Address",
   "about.hostname": "Hostname",
   "about.freeHeap": "Free Heap",
-
   "modal.confirmTitle": "Confirm",
   "btn.confirm": "Confirm",
   "btn.cancel": "Cancel",
-
   "uptime": "Uptime",
   "rssi.label": "Signal",
   "ws.connected": "Connected",
   "ws.disconnected": "Disconnected",
   "lang.switchToEn": "EN",
-  "lang.switchToAr": "AR"
+  "lang.switchToAr": "AR",
+  "wifi.staticMode": "Use Static IP",
+  "wifi.staticIp": "Static IP",
+  "wifi.gateway": "Gateway",
+  "wifi.subnet": "Subnet Mask",
+  "wifi.dns": "DNS Server",
+  "wifi.apPassword": "Setup AP Password",
+  "wifi.invalidIp": "Check the static IP fields.",
+  "system.mdnsEnabled": "mDNS (.local address)",
+  "about.mdnsStatus": "mDNS Status",
+  "about.mdnsUrl": "Dashboard URL",
+  "about.mdnsRunning": "Running",
+  "about.mdnsStopped": "Enabled, not running",
+  "about.mdnsDisabled": "Disabled"
 }

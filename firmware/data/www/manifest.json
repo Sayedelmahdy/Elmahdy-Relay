@@ -1,6 +1,6 @@
 {
   "name": "Elmahdy Relay",
-  "short_name": "ElRelay",
+  "short_name": "Elmahdy Relay IoT",
   "description": "Smart IoT Relay Controller",
   "start_url": "/",
   "display": "standalone",

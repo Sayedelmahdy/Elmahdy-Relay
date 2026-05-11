@@ -248,13 +248,7 @@ void WebSocketHandler::handleRelay(AsyncWebSocketClient* client,
         relay_->setState(id, false);
     } else if (strcmp(action, "toggle") == 0) {
         relay_->toggle(id);
-    } else {
-        Serial.printf_P(PSTR("[WS] client #%u relay: unknown action '%s'\n"),
-                        client->id(), action);
-        return;
     }
-
-    broadcastState();
 }
 
 void WebSocketHandler::handleRelayAll(AsyncWebSocketClient* client,
@@ -267,19 +261,12 @@ void WebSocketHandler::handleRelayAll(AsyncWebSocketClient* client,
         relay_->setAll(true);
     } else if (strcmp(action, "off") == 0) {
         relay_->setAll(false);
-    } else {
-        Serial.printf_P(PSTR("[WS] client #%u relayAll: unknown action '%s'\n"),
-                        client->id(), action);
-        return;
     }
-
-    broadcastState();
 }
 
 void WebSocketHandler::handleScene(AsyncWebSocketClient* client,
                                    const JsonDocument&   doc)
 {
-    // {"type":"scene","name":"Night Mode"}
     const char* name = doc["name"] | "";
     if (name[0] == '\0') {
         Serial.printf_P(PSTR("[WS] client #%u scene: missing 'name'\n"),
@@ -290,10 +277,7 @@ void WebSocketHandler::handleScene(AsyncWebSocketClient* client,
     if (!scene_->activate(name)) {
         Serial.printf_P(PSTR("[WS] client #%u scene: '%s' not found\n"),
                         client->id(), name);
-        return;
     }
-
-    broadcastState();
 }
 
 void WebSocketHandler::handleGetState(AsyncWebSocketClient* client)
@@ -413,8 +397,10 @@ size_t WebSocketHandler::buildStateJson(char* buf, size_t bufLen)
 
     const uint8_t count = relay_->getChannelCount();
     for (uint8_t i = 1; i <= count; ++i) {
+        const RelayChannel* ch = relay_->getChannel(i);
         JsonObject entry = relays.add<JsonObject>();
         entry["id"]    = i;
+        entry["name"]  = ch ? ch->name : "";
         entry["state"] = relay_->getState(i);
     }
 
@@ -443,6 +429,21 @@ size_t WebSocketHandler::buildInfoJson(char* buf, size_t bufLen,
     doc["version"] = F(VERSION);
     doc["mac"]     = WiFi.macAddress();
     doc["ip"]      = WiFi.localIP().toString();
+
+    {
+        const time_t now = time(nullptr);
+        doc["ntpSynced"] = (now >= 1577836800L);
+        if (now >= 1577836800L) {
+            char timeBuf[20];
+            struct tm* ti = localtime(&now);
+            int h = ti->tm_hour % 12;
+            if (h == 0) h = 12;
+            snprintf(timeBuf, sizeof(timeBuf), "%02d:%02d %s", h, ti->tm_min, ti->tm_hour >= 12 ? "PM" : "AM");
+            doc["time"] = timeBuf;
+        } else {
+            doc["time"] = "";
+        }
+    }
 
     const size_t len = serializeJson(doc, buf, bufLen);
     if (len >= bufLen) {

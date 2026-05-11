@@ -83,6 +83,9 @@ public:
     // connected client.
     void broadcastConfigChanged(const char* section);
 
+    // Update the cached MQTT connection state for periodic broadcasts
+    void setMqttConnected(bool connected) { mqttConnected_ = connected; }
+
     // ── Maintenance ────────────────────────────────────────────────────────
 
     // Must be called from loop().  Invokes ws_.cleanupClients() to reclaim

@@ -10,18 +10,75 @@
 #include "timer_engine.h"
 #include "scene_manager.h"
 #include "buzzer_controller.h"
+#include "mqtt_manager.h"
 
 #include <ArduinoJson.h>
 #include <LittleFS.h>
 #include <Ticker.h>
+#include <string.h>
 // Update (ESP8266 Updater) is part of the core — no header needed
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Constructor
 // ─────────────────────────────────────────────────────────────────────────────
 
-static Ticker _restartTicker;
-static bool   _otaError = false;
+static Ticker       _restartTicker;
+static bool         _otaError = false;
+
+// Deferred WiFi reconnect — lets the HTTP response flush before we drop STA.
+static Ticker       _wifiReconnectTicker;
+static WiFiManager* _wifiMgrRef        = nullptr;
+static String       _pendingConnSsid;
+static String       _pendingConnPass;
+
+// Minimal percent-decoder for URL path segments.
+static String urlDecode(const String& s) {
+    String out;
+    out.reserve(s.length());
+    for (unsigned i = 0; i < s.length(); ++i) {
+        if (s[i] == '%' && i + 2 < s.length()) {
+            const char hi = s[i + 1], lo = s[i + 2];
+            auto h = [](char c) -> int {
+                if (c >= '0' && c <= '9') return c - '0';
+                if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+                if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+                return -1;
+            };
+            if (h(hi) >= 0 && h(lo) >= 0) {
+                out += (char)((h(hi) << 4) | h(lo));
+                i += 2;
+                continue;
+            }
+        } else if (s[i] == '+') {
+            out += ' ';
+            continue;
+        }
+        out += s[i];
+    }
+    return out;
+}
+
+static String sanitizeHostname(const char* raw) {
+    String out;
+    const char* p = raw ? raw : "";
+    out.reserve(20);
+    for (; *p && out.length() < 20; ++p) {
+        char c = *p;
+        if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
+        if ((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9')) {
+            out += c;
+        } else if ((c == '-' || c == '_' || c == ' ') && out.length() > 0) {
+            if (out[out.length() - 1] != '-') out += '-';
+        }
+    }
+    while (out.length() > 0 && out[out.length() - 1] == '-') {
+        out.remove(out.length() - 1);
+    }
+    if (out.length() == 0) {
+        out = F("elmahdyrelay");
+    }
+    return out;
+}
 
 WebServer::WebServer()
     : _config(nullptr)
@@ -30,6 +87,7 @@ WebServer::WebServer()
     , _wifi(nullptr)
     , _timerEngine(nullptr)
     , _sceneManager(nullptr)
+    , _mqttManager(nullptr)
     , _server(nullptr)
 {}
 
@@ -43,6 +101,10 @@ void WebServer::setTimerEngine(TimerEngine& timer) {
 
 void WebServer::setSceneManager(SceneManager& scene) {
     _sceneManager = &scene;
+}
+
+void WebServer::setMqttManager(MqttManager& mqtt) {
+    _mqttManager = &mqtt;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -149,6 +211,25 @@ void WebServer::registerRoutes() {
             doc["name"]     = "Elmahdy Relay";
             doc["version"]  = VERSION;
             doc["mac"]      = WiFi.macAddress();
+            doc["ip"]       = (_wifi && _wifi->isConnected())
+                ? _wifi->getLocalIp().toString()
+                : String("");
+            doc["freeHeap"] = static_cast<uint32_t>(ESP.getFreeHeap());
+
+            const JsonDocument& sysDoc = _config->systemConfig();
+            const char* hostname = sysDoc["hostname"] | "elmahdyrelay";
+            doc["hostname"] = hostname;
+
+            JsonObject mdns = doc["mdns"].to<JsonObject>();
+            const bool mdnsEnabled = _wifi ? _wifi->isMdnsEnabled()
+                                           : (sysDoc["mdnsEnabled"] | true);
+            mdns["enabled"]  = mdnsEnabled;
+            mdns["running"]  = _wifi ? _wifi->isMdnsRunning() : false;
+            mdns["hostname"] = hostname;
+            mdns["url"]      = mdnsEnabled
+                ? (_wifi ? _wifi->getMdnsUrl()
+                         : String(F("http://")) + hostname + F(".local"))
+                : String("");
 
             // Channel count from in-memory relay config
             const JsonDocument& relayDoc = _config->relayConfig();
@@ -173,17 +254,29 @@ void WebServer::registerRoutes() {
         }
     );
 
-    // ── GET /api/wifi/scan — trigger scan and return results ─────────────────
+    // ── GET /api/wifi/scan — fire async scan, return immediately ─────────────
+    // Client must then poll GET /api/wifi/results until "scanning" is false.
     _server->on("/api/wifi/scan", HTTP_GET,
         [this](AsyncWebServerRequest* request) {
-            String results;
-            if (_wifi) {
-                _wifi->scan();
-                results = _wifi->getScanResults();
+            if (_wifi) _wifi->scan();
+            AsyncWebServerResponse* resp =
+                request->beginResponse(200, "application/json",
+                                       F("{\"scanning\":true}"));
+            addCorsHeaders(resp);
+            request->send(resp);
+        }
+    );
+
+    // ── GET /api/wifi/results — poll for async scan completion ───────────────
+    _server->on("/api/wifi/results", HTTP_GET,
+        [this](AsyncWebServerRequest* request) {
+            String body;
+            if (WiFi.scanComplete() == WIFI_SCAN_RUNNING) {
+                body = F("{\"scanning\":true}");
             } else {
-                results = "[]";
+                String nets = _wifi ? _wifi->getScanResults() : F("[]");
+                body = "{\"scanning\":false,\"networks\":" + nets + "}";
             }
-            String body = "{\"networks\":" + results + "}";
             AsyncWebServerResponse* resp =
                 request->beginResponse(200, "application/json", body);
             addCorsHeaders(resp);
@@ -198,10 +291,14 @@ void WebServer::registerRoutes() {
             const JsonDocument& wDoc = _config->wifiConfig();
             JsonDocument out;
             out["ssid"]       = wDoc["ssid"]       | "";
-            out["staticIp"]   = wDoc["staticIp"]   | "";
-            out["gateway"]    = wDoc["gateway"]     | "";
-            out["subnet"]     = wDoc["subnet"]      | "255.255.255.0";
-            out["apPassword"] = wDoc["apPassword"]  | "12345678";
+            out["hasPassword"] = strlen(wDoc["password"] | "") > 0;
+            out["dhcp"]       = wDoc["dhcp"]       | true;
+            out["staticIp"]   = wDoc["staticIp"]   | "192.168.1.50";
+            out["gateway"]    = wDoc["gateway"]    | "192.168.1.1";
+            out["subnet"]     = wDoc["subnet"]     | "255.255.255.0";
+            out["dns"]        = wDoc["dns"]        | "8.8.8.8";
+            out["apSsid"]     = wDoc["apSsid"]     | "";
+            out["apPassword"] = wDoc["apPassword"] | "12345678";
             String body;
             serializeJson(out, body);
             AsyncWebServerResponse* resp =
@@ -232,24 +329,81 @@ void WebServer::registerRoutes() {
                 return;
             }
             const char* ssid = doc["ssid"] | "";
-            const char* pass = doc["password"] | "";
-            if (strlen(ssid) == 0) {
-                request->send(400, "application/json",
-                              "{\"error\":\"ssid required\"}");
-                return;
-            }
-            // Persist and kick off STA connection
-            JsonDocument& wDoc = _config->wifiConfigMut();
-            wDoc["ssid"]     = ssid;
-            wDoc["password"] = pass;
-            _config->saveWifi();
-            if (_wifi) _wifi->connectSTA(ssid, pass);
+            const char* incomingPass = doc["password"] | "";
+            const char* passwordMode = doc["passwordMode"] | "";
 
+            const bool useDhcp = doc["dhcp"] | true;
+            if (!useDhcp) {
+                IPAddress ip, gw, sn, dns;
+                if (!ip.fromString(doc["staticIp"] | "") ||
+                    !gw.fromString(doc["gateway"] | "") ||
+                    !sn.fromString(doc["subnet"] | "") ||
+                    !dns.fromString(doc["dns"] | "8.8.8.8"))
+                {
+                    AsyncWebServerResponse* resp =
+                        request->beginResponse(400, "application/json",
+                                               "{\"error\":\"invalid static network settings\"}");
+                    addCorsHeaders(resp);
+                    request->send(resp);
+                    return;
+                }
+            }
+
+            // Persist credentials. For the same SSID, an empty password means
+            // "keep the existing password" so IP edits cannot wipe WiFi. For
+            // a new SSID, empty password is valid for an open network.
+            JsonDocument& wDoc = _config->wifiConfigMut();
+            const char* savedSsid = wDoc["ssid"] | "";
+            const char* savedPass = wDoc["password"] | "";
+            const bool sameSsid = strcmp(ssid, savedSsid) == 0;
+            const bool keepSavedPassword = strcmp(passwordMode, "keep") == 0 && sameSsid;
+            const bool forceOpenNetwork = strcmp(passwordMode, "open") == 0;
+            const char* pass = "";
+            if (keepSavedPassword) {
+                pass = savedPass;
+            } else if (forceOpenNetwork) {
+                pass = "";
+            } else if (incomingPass[0] != '\0') {
+                pass = incomingPass;
+            } else if (sameSsid) {
+                pass = savedPass;
+            }
+            wDoc["ssid"]       = ssid;
+            wDoc["password"]   = pass;
+            wDoc["dhcp"]       = useDhcp;
+            wDoc["staticIp"]   = doc["staticIp"] | "192.168.1.50";
+            wDoc["gateway"]    = doc["gateway"]  | "192.168.1.1";
+            wDoc["subnet"]     = doc["subnet"]   | "255.255.255.0";
+            wDoc["dns"]        = doc["dns"]      | "8.8.8.8";
+            if (doc["apSsid"].is<const char*>()) {
+                wDoc["apSsid"] = doc["apSsid"].as<const char*>();
+            }
+            if (doc["apPassword"].is<const char*>()) {
+                wDoc["apPassword"] = doc["apPassword"].as<const char*>();
+            }
+            _config->saveWifi();
+
+            // Send response FIRST so the browser receives it before we
+            // disconnect the STA interface (which would drop the TCP session).
             AsyncWebServerResponse* resp =
                 request->beginResponse(200, "application/json",
                                        "{\"success\":true}");
             addCorsHeaders(resp);
             request->send(resp);
+
+            // Schedule connect 800 ms later — enough time for the response
+            // to be ACKed by the client over the existing STA connection.
+            if (_wifi) {
+                _wifiMgrRef    = _wifi;
+                _pendingConnSsid = String(ssid);
+                _pendingConnPass = String(pass);
+                _wifiReconnectTicker.once_ms(800, []() {
+                    if (_wifiMgrRef) {
+                        _wifiMgrRef->connectSTA(_pendingConnSsid.c_str(),
+                                                _pendingConnPass.c_str());
+                    }
+                });
+            }
         },
         nullptr,
         [](AsyncWebServerRequest* request,
@@ -295,18 +449,53 @@ void WebServer::registerRoutes() {
                 wifi["rssi"] = 0;
                 wifi["ip"]   = "";
             }
+            {
+                const JsonDocument& wDoc = _config->wifiConfig();
+                wifi["dhcp"]     = wDoc["dhcp"]     | true;
+                wifi["staticIp"] = wDoc["staticIp"] | "192.168.1.50";
+                wifi["gateway"]  = wDoc["gateway"]  | "192.168.1.1";
+                wifi["subnet"]   = wDoc["subnet"]   | "255.255.255.0";
+                wifi["dns"]      = wDoc["dns"]      | "8.8.8.8";
+            }
 
-            // MQTT object — real status wired in T027
+            // MQTT object
             JsonObject mqtt = doc["mqtt"].to<JsonObject>();
-            mqtt["connected"] = false;
             const JsonDocument& mDoc = _config->mqttConfig();
+            mqtt["enabled"] = _mqttManager ? _mqttManager->isEnabled() : (mDoc["enabled"] | false);
+            mqtt["connected"] = _mqttManager ? _mqttManager->isConnected() : false;
             mqtt["broker"] = mDoc["broker"] | "";
+            mqtt["port"] = mDoc["port"] | 1883;
+            mqtt["prefix"] = mDoc["prefix"] | "elmahdy";
 
             // System fields
             doc["uptime"]    = millis() / 1000UL;
             doc["version"]   = VERSION;
-            doc["ntpSynced"] = false;  // real value wired in T037
-            doc["time"]      = "";     // real value wired in T037
+            const JsonDocument& sysDoc = _config->systemConfig();
+            const char* hostname = sysDoc["hostname"] | "elmahdyrelay";
+            doc["hostname"]  = hostname;
+            JsonObject mdns = doc["mdns"].to<JsonObject>();
+            const bool mdnsEnabled = _wifi ? _wifi->isMdnsEnabled()
+                                           : (sysDoc["mdnsEnabled"] | true);
+            mdns["enabled"]  = mdnsEnabled;
+            mdns["running"]  = _wifi ? _wifi->isMdnsRunning() : false;
+            mdns["hostname"] = hostname;
+            mdns["url"]      = mdnsEnabled
+                ? (_wifi ? _wifi->getMdnsUrl()
+                         : String(F("http://")) + hostname + F(".local"))
+                : String("");
+            {
+                const time_t now = time(nullptr);
+                doc["ntpSynced"] = (now >= 1577836800L);
+                if (now >= 1577836800L) {
+                    char timeBuf[20];
+                    struct tm* ti = localtime(&now);
+                    snprintf(timeBuf, sizeof(timeBuf), "%02d:%02d %s",
+                             (ti->tm_hour % 12 == 0 ? 12 : ti->tm_hour % 12), ti->tm_min, ti->tm_hour >= 12 ? "PM" : "AM");
+                    doc["time"] = timeBuf;
+                } else {
+                    doc["time"] = "";
+                }
+            }
 
             String body;
             body.reserve(512);
@@ -386,7 +575,7 @@ void WebServer::registerRoutes() {
     );
 
     // ── POST /api/relay/{ch} — control a single relay ─────────────────────
-    _server->on("/api/relay/{}", HTTP_POST,
+    _server->on("/api/relay/*", HTTP_POST,
         [this](AsyncWebServerRequest* request) {
             String* bodyStr = reinterpret_cast<String*>(request->_tempObject);
             if (!bodyStr) {
@@ -403,8 +592,9 @@ void WebServer::registerRoutes() {
                 return;
             }
 
-            // Extract channel from URL path parameter (1-based)
-            int ch = request->pathArg(0).toInt();
+            // Extract channel number from URL: /api/relay/N
+            const String& url = request->url();
+            int ch = url.substring(url.lastIndexOf('/') + 1).toInt();
             if (ch < 1 || ch > static_cast<int>(_relay->getChannelCount())) {
                 request->send(400, "application/json", "{\"error\":\"Invalid channel\"}");
                 return;
@@ -596,6 +786,7 @@ void WebServer::registerRoutes() {
             _config->saveRelays();
             _relay->begin(*_config);
             _ws->broadcastConfigChanged("relays");
+            _ws->broadcastState();  // refresh relay names on dashboard
 
             // Build success response.
             JsonDocument respDoc;
@@ -637,11 +828,10 @@ void WebServer::registerRoutes() {
             const JsonDocument& mDoc = _config->mqttConfig();
             JsonDocument out;
             out["enabled"]  = mDoc["enabled"]  | false;
-            out["broker"]   = mDoc["broker"]   | "broker.hivemq.com";
+            out["broker"]   = mDoc["broker"]   | "broker.emqx.io";
             out["port"]     = mDoc["port"]     | 1883;
-            out["username"] = mDoc["username"] | "";
             out["prefix"]   = mDoc["prefix"]   | "elmahdy";
-            // password intentionally omitted from response
+            out["connected"] = _mqttManager ? _mqttManager->isConnected() : false;
 
             String body;
             body.reserve(256);
@@ -718,21 +908,26 @@ void WebServer::registerRoutes() {
 
             // Write validated values into the mutable MQTT config doc
             JsonDocument& mDoc = _config->mqttConfigMut();
-            mDoc["enabled"]  = doc["enabled"]  | false;
+            mDoc["enabled"]  = doc["enabled"].is<bool>() ? doc["enabled"].as<bool>() : true;
             mDoc["broker"]   = broker;
             mDoc["port"]     = static_cast<uint16_t>(port);
-            mDoc["username"] = doc["username"] | "";
-            mDoc["password"] = doc["password"] | "";
+            mDoc["username"] = "";
+            mDoc["password"] = "";
             mDoc["prefix"]   = prefix;
 
             _config->saveMqtt();
+
+            // Broadcast before we reboot
             _ws->broadcastConfigChanged("mqtt");
 
             AsyncWebServerResponse* resp =
                 request->beginResponse(200, "application/json",
-                                       "{\"success\":true}");
+                                       "{\"success\":true,\"restarting\":true}");
             addCorsHeaders(resp);
             request->send(resp);
+
+            // Schedule reboot
+            _restartTicker.once_ms(1200, []() { ESP.restart(); });
         },
         nullptr,
         [](AsyncWebServerRequest* request,
@@ -750,9 +945,10 @@ void WebServer::registerRoutes() {
 
     // ── GET /api/lang/{code} — serve language pack JSON from LittleFS ────────
     // T025: code must be "ar" or "en"; file lives at /lang_{code}.json in root.
-    _server->on("/api/lang/{}", HTTP_GET,
+    _server->on("/api/lang/*", HTTP_GET,
         [](AsyncWebServerRequest* request) {
-            String code = request->pathArg(0);
+            const String& url = request->url();
+            String code = url.substring(url.lastIndexOf('/') + 1);
             code.toLowerCase();
             if (code != "ar" && code != "en") {
                 request->send(400, "application/json",
@@ -932,9 +1128,10 @@ void WebServer::registerRoutes() {
     // ── DELETE /api/timer/{id} — cancel a timer by ID ────────────────────────
     // Response: {"success":true}
     // Error:    {"error":"Timer not found"} 404
-    _server->on("/api/timer/{}", HTTP_DELETE,
+    _server->on("/api/timer/*", HTTP_DELETE,
         [this](AsyncWebServerRequest* request) {
-            uint16_t timerId = static_cast<uint16_t>(request->pathArg(0).toInt());
+            const String& url = request->url();
+            uint16_t timerId = static_cast<uint16_t>(url.substring(url.lastIndexOf('/') + 1).toInt());
 
             if (!_timerEngine) {
                 AsyncWebServerResponse* resp =
@@ -998,16 +1195,28 @@ void WebServer::registerRoutes() {
             if (doc["resetEnabled"].is<bool>())    sys["resetEnabled"]   = doc["resetEnabled"].as<bool>();
             if (doc["buzzerPin"].is<int>())        sys["buzzerPin"]      = doc["buzzerPin"].as<int>();
             if (doc["resetPin"].is<int>())         sys["resetPin"]       = doc["resetPin"].as<int>();
-            if (doc["hostname"].is<const char*>()) sys["hostname"]       = doc["hostname"].as<const char*>();
+            if (doc["hostname"].is<const char*>()) {
+                sys["hostname"] = sanitizeHostname(doc["hostname"].as<const char*>());
+            }
+            if (doc["mdnsEnabled"].is<bool>())     sys["mdnsEnabled"]    = doc["mdnsEnabled"].as<bool>();
             if (doc["timezoneOffset"].is<int>())   sys["timezoneOffset"] = doc["timezoneOffset"].as<int>();
             if (doc["language"].is<const char*>()) sys["language"]       = doc["language"].as<const char*>();
             _config->saveSystem();
+            if (doc["buzzerEnabled"].is<bool>())
+                buzzerController.setEnabled(doc["buzzerEnabled"].as<bool>());
+            if (_wifi && (doc["hostname"].is<const char*>() || doc["mdnsEnabled"].is<bool>())) {
+                _wifi->refreshMdns();
+            }
 
             if (_ws) { _ws->broadcastConfigChanged("system"); }
             AsyncWebServerResponse* resp =
-                request->beginResponse(200, "application/json", "{\"success\":true}");
+                request->beginResponse(200, "application/json",
+                                       "{\"success\":true,\"restarting\":true}");
             addCorsHeaders(resp);
             request->send(resp);
+
+            // Deferred restart — 1200 ms lets the TCP ACK flush before reset.
+            _restartTicker.once_ms(1200, []() { ESP.restart(); });
         },
         nullptr,
         [](AsyncWebServerRequest* request,
@@ -1016,7 +1225,9 @@ void WebServer::registerRoutes() {
             if (index == 0) { request->_tempObject = new String(); }
             reinterpret_cast<String*>(request->_tempObject)
                 ->concat(reinterpret_cast<const char*>(data), len);
+                
         }
+        
     );
 
     // ── GET /api/scenes — list all scenes ────────────────────────────────────
@@ -1033,6 +1244,43 @@ void WebServer::registerRoutes() {
                 request->beginResponse(200, "application/json", body);
             addCorsHeaders(resp);
             request->send(resp);
+        }
+    );
+
+    // ── POST /api/scene/{name}/activate — trigger a scene ────────────────────
+    // Registered BEFORE the exact /api/scene create handler because this
+    // library's exact-URI matching also matches sub-paths (/api/scene/*),
+    // so the wildcard must win first for activate requests.
+    _server->on("/api/scene/*", HTTP_POST,
+        [this](AsyncWebServerRequest* request) {
+            const String& url = request->url();
+            if (!url.endsWith("/activate")) {
+                AsyncWebServerResponse* resp =
+                    request->beginResponse(404, "application/json",
+                                           "{\"error\":\"Not found\"}");
+                addCorsHeaders(resp);
+                request->send(resp);
+                return;
+            }
+            // Extract name: /api/scene/NAME/activate
+            String inner = url.substring(strlen("/api/scene/"));
+            String name  = urlDecode(inner.substring(0, inner.length() - strlen("/activate")));
+            if (!_sceneManager || name.isEmpty()) {
+                request->send(400, "application/json", "{\"error\":\"Missing name\"}");
+                return;
+            }
+            if (_sceneManager->activate(name.c_str())) {
+                if (_ws) { _ws->broadcastState(); }
+                AsyncWebServerResponse* resp =
+                    request->beginResponse(200, "application/json",
+                                           "{\"success\":true}");
+                addCorsHeaders(resp); request->send(resp);
+            } else {
+                AsyncWebServerResponse* resp =
+                    request->beginResponse(404, "application/json",
+                                           "{\"error\":\"Scene not found\"}");
+                addCorsHeaders(resp); request->send(resp);
+            }
         }
     );
 
@@ -1087,33 +1335,11 @@ void WebServer::registerRoutes() {
         }
     );
 
-    // ── POST /api/scene/{name}/activate — trigger a scene ────────────────────
-    _server->on("/api/scene/{}/activate", HTTP_POST,
-        [this](AsyncWebServerRequest* request) {
-            String name = request->pathArg(0);
-            if (!_sceneManager || name.isEmpty()) {
-                request->send(400, "application/json", "{\"error\":\"Missing name\"}");
-                return;
-            }
-            if (_sceneManager->activate(name.c_str())) {
-                if (_ws) { _ws->broadcastState(); }
-                AsyncWebServerResponse* resp =
-                    request->beginResponse(200, "application/json",
-                                           "{\"success\":true}");
-                addCorsHeaders(resp); request->send(resp);
-            } else {
-                AsyncWebServerResponse* resp =
-                    request->beginResponse(404, "application/json",
-                                           "{\"error\":\"Scene not found\"}");
-                addCorsHeaders(resp); request->send(resp);
-            }
-        }
-    );
-
     // ── DELETE /api/scene/{name} — delete a scene ────────────────────────────
-    _server->on("/api/scene/{}", HTTP_DELETE,
+    _server->on("/api/scene/*", HTTP_DELETE,
         [this](AsyncWebServerRequest* request) {
-            String name = request->pathArg(0);
+            const String& url = request->url();
+            String name = urlDecode(url.substring(strlen("/api/scene/")));
             if (!_sceneManager || name.isEmpty()) {
                 request->send(400, "application/json", "{\"error\":\"Missing name\"}");
                 return;

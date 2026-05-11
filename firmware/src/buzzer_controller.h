@@ -12,6 +12,7 @@ public:
 
     void begin(ConfigManager& config);
     void tick();
+    void setEnabled(bool enabled);
 
     void beepShort();   // one short beep — relay toggle feedback
     void beepDouble();  // two beeps — WiFi connected

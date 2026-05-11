@@ -41,13 +41,13 @@ static const char* const CFG_SYSTEM_PATH       = "/system.json";
  * conservatively above the maximum serialised lengths given in data-model.md.
  * Keeping them as tight as possible is important on the 80 KB ESP8266 heap.
  * ------------------------------------------------------------------------- */
-static const size_t CFG_WIFI_DOC_CAP        = 384;
+static const size_t CFG_WIFI_DOC_CAP        = 512;
 static const size_t CFG_MQTT_DOC_CAP        = 384;
 static const size_t CFG_RELAYS_DOC_CAP      = 768;
 static const size_t CFG_RELAY_STATE_DOC_CAP = 128;
 static const size_t CFG_TIMERS_DOC_CAP      = 1536;
 static const size_t CFG_SCENES_DOC_CAP      = 1536;
-static const size_t CFG_SYSTEM_DOC_CAP      = 384;
+static const size_t CFG_SYSTEM_DOC_CAP      = 512;
 
 /* -------------------------------------------------------------------------
  * ConfigManager
@@ -162,8 +162,10 @@ private:
      * Stripping "crc" before hashing means the stored CRC field itself is not
      * part of the protected data, which avoids the chicken-and-egg problem of
      * needing to know the CRC to compute the CRC.
-     */
+    */
     static uint32_t _computeDocCrc(JsonDocument& doc);
+    static bool _readAndValidateSectionFile(const char* filename,
+                                            JsonDocument& doc);
 
     /** Build the .tmp path for a given canonical filename, e.g.
      *  "/wifi.json" → "/wifi.json.tmp" */

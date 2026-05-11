@@ -48,6 +48,8 @@
 
 #include <ArduinoJson.h>
 
+static const uint32_t RELAY_STATE_SAVE_DEBOUNCE_MS = 1000;
+
 /* =========================================================================
  * Constructor
  * ========================================================================= */
@@ -56,10 +58,12 @@ RelayController::RelayController()
     : _channelCount(0)
     , _config(nullptr)
     , _onStateChange(nullptr)
+    , _isBatchMode(false)
 {
     // Zero-initialise the channel array so every field starts in a known state
     // even if begin() is called late or not at all.
     memset(_channels, 0, sizeof(_channels));
+    for (uint8_t i = 0; i < MAX_CHANNELS; i++) _targetStates[i] = false;
 }
 
 /* =========================================================================
@@ -157,6 +161,8 @@ void RelayController::begin(ConfigManager& config) {
         // write during startup — the stored state is already correct.
         _applyGpio(ch, target);
         ch.state = target;
+        ch.gpioState = target;
+        _targetStates[i] = target;
         ch.pulseEndTime = 0;
     }
 
@@ -172,6 +178,10 @@ bool RelayController::setState(uint8_t channel, bool newState) {
     if (ch == nullptr) {
         Serial.printf("[RelayController] setState: channel %u not found\n", channel);
         return false;
+    }
+
+    if (!_isBatchMode && ch->state == newState && ch->gpioState == newState) {
+        return true;
     }
 
     // ---- 1. Interlock enforcement ----------------------------------------
@@ -208,10 +218,14 @@ bool RelayController::setState(uint8_t channel, bool newState) {
     }
 
     // ---- 2. Write GPIO --------------------------------------------------
-    _applyGpio(*ch, newState);
+    if (!_isBatchMode && !_staggerActive) {
+        _applyGpio(*ch, newState);
+        ch->gpioState = newState;
+    }
 
     // ---- 3. Update in-memory state --------------------------------------
     ch->state = newState;
+    _targetStates[static_cast<uint8_t>(channel - 1)] = newState;
 
     // ---- 4. Arm / disarm pulse timer ------------------------------------
     if (newState && ch->pulseDuration > 0) {
@@ -222,7 +236,9 @@ bool RelayController::setState(uint8_t channel, bool newState) {
     }
 
     // ---- 5. Persist state -----------------------------------------------
-    _persistState();
+    if (!_isBatchMode) {
+        _schedulePersistState();
+    }
 
     // ---- 6. Invoke callback ---------------------------------------------
     if (_onStateChange) {
@@ -249,9 +265,24 @@ bool RelayController::toggle(uint8_t channel) {
  * ========================================================================= */
 
 void RelayController::setAll(bool newState) {
+    startBatch();
     for (uint8_t i = 0; i < _channelCount; i++) {
         setState(_channels[i].id, newState);
     }
+    endBatch();
+}
+
+void RelayController::startBatch() {
+    _isBatchMode = true;
+}
+
+void RelayController::endBatch() {
+    if (!_isBatchMode) return;
+    _isBatchMode = false;
+    
+    // Start the non-blocking staggered sequence
+    _staggerActive = true;
+    _lastStaggerMs = 0; // Trigger first one immediately
 }
 
 /* =========================================================================
@@ -269,6 +300,43 @@ bool RelayController::getState(uint8_t channel) const {
 
 void RelayController::tick() {
     const uint32_t now = millis();
+
+    // ---- 1. Staggered Batch Execution (Non-blocking) --------------------
+    if (_staggerActive) {
+        if (_lastStaggerMs == 0 || (now - _lastStaggerMs >= RELAY_STAGGER_MS)) {
+            bool anyChangedThisTick = false;
+            bool anyPendingAtAll = false;
+
+            for (uint8_t i = 0; i < _channelCount; i++) {
+                RelayChannel& ch = _channels[i];
+                if (ch.gpioState != ch.state) {
+                    if (!anyChangedThisTick) {
+                        // Apply this relay now
+                        _applyGpio(ch, ch.state);
+                        ch.gpioState = ch.state;
+                        _lastStaggerMs = now;
+                        anyChangedThisTick = true;
+                    } else {
+                        // More relays are still waiting for their turn
+                        anyPendingAtAll = true;
+                    }
+                }
+            }
+
+            if (!anyChangedThisTick && !anyPendingAtAll) {
+                // Everything is now in sync
+                _staggerActive = false;
+                _persistState();
+            }
+        }
+    }
+
+    if (!_staggerActive && _statePersistPending &&
+        (now - _lastStateChangeMs) >= RELAY_STATE_SAVE_DEBOUNCE_MS) {
+        _persistState();
+    }
+
+    // ---- 2. Pulse Mode Expiry -------------------------------------------
     for (uint8_t i = 0; i < _channelCount; i++) {
         RelayChannel& ch = _channels[i];
         if (ch.pulseEndTime != 0 && now >= ch.pulseEndTime) {
@@ -357,7 +425,14 @@ void RelayController::_persistState() {
         }
     }
 
-    _config->saveRelayState();
+    if (_config->saveRelayState()) {
+        _statePersistPending = false;
+    }
+}
+
+void RelayController::_schedulePersistState() {
+    _statePersistPending = true;
+    _lastStateChangeMs = millis();
 }
 
 bool RelayController::_loadLastState(uint8_t channelId) {

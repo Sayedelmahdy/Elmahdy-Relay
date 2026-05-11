@@ -48,6 +48,15 @@ void BuzzerController::_startPattern(uint8_t count, uint16_t onMs, uint16_t offM
     _nextEventMs = now; // fire immediately on next tick
 }
 
+void BuzzerController::setEnabled(bool enabled) {
+    _enabled = enabled;
+    if (!enabled) {
+        // silence any in-progress pattern
+        _beepsLeft = 0;
+        digitalWrite(_pin, LOW);
+    }
+}
+
 void BuzzerController::beepShort()  { _startPattern(1, 80, 0); }
 void BuzzerController::beepDouble() { _startPattern(2, 80, 80); }
 void BuzzerController::beepLong()   { _startPattern(1, 600, 0); }

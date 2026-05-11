@@ -1,0 +1,104 @@
+================================================================================
+  ELMAHDY RELAY — Flash Guide (ESP8266 / NodeMCU v2)
+  Run all commands from the  firmware/  folder
+================================================================================
+
+────────────────────────────────────────────────────────────────────────────────
+ONE-TIME SETUP (run this once on a new PC)
+────────────────────────────────────────────────────────────────────────────────
+
+  Install the missing merge dependency into PlatformIO's Python:
+
+    %USERPROFILE%\.platformio\penv\Scripts\pip.exe install intelhex
+
+
+────────────────────────────────────────────────────────────────────────────────
+STEP 1 — BUILD FIRMWARE + FILESYSTEM
+────────────────────────────────────────────────────────────────────────────────
+
+  Build firmware binary:
+    %USERPROFILE%\.platformio\penv\Scripts\pio.exe run
+
+  Build LittleFS image (web UI + language files):
+    %USERPROFILE%\.platformio\penv\Scripts\pio.exe run --target buildfs
+
+  Output files:
+    Firmware   →  .pio\build\nodemcuv2\firmware.bin
+    Filesystem →  .pio\build\nodemcuv2\littlefs.bin
+
+
+────────────────────────────────────────────────────────────────────────────────
+STEP 2 — MERGE INTO ONE .BIN FOR TASMOTIZER
+────────────────────────────────────────────────────────────────────────────────
+
+  Flash layout (eagle.flash.4m2m.ld — 4 MB flash):
+    0x000000  →  firmware  (sketch + bootloader)
+    0x200000  →  LittleFS  (web UI, config, lang files)
+
+  Merge command:
+
+    %USERPROFILE%\.platformio\penv\Scripts\python.exe ^
+      %USERPROFILE%\.platformio\packages\tool-esptoolpy\esptool.py ^
+      --chip esp8266 merge_bin ^
+      --flash_mode dio --flash_freq 80m --flash_size 4MB ^
+      -o elmahdy-relay-full.bin ^
+      0x000000 .pio\build\nodemcuv2\firmware.bin ^
+      0x200000 .pio\build\nodemcuv2\littlefs.bin
+
+  Output:  firmware\elmahdy-relay-full.bin   ← open this in Tasmotizer
+
+
+────────────────────────────────────────────────────────────────────────────────
+STEP 3 — FLASH WITH TASMOTIZER
+────────────────────────────────────────────────────────────────────────────────
+
+  1. Open Tasmotizer
+  2. Select your COM port  (e.g. COM3)
+  3. Click "BrowseFile" → select  elmahdy-relay-full.bin
+  4. Check  "Erase before flashing"  (first time only — clears old config)
+  5. Click  "Tasmoize!"
+  6. Wait for "Done"
+  7. Device reboots → connect to Wi-Fi  ElmahdyRelay-XXXX
+     then open  http://192.168.4.1  in your browser
+
+
+────────────────────────────────────────────────────────────────────────────────
+STEP 4 — UPDATE ONLY (keeps saved settings, no full erase)
+────────────────────────────────────────────────────────────────────────────────
+
+  Option A — Tasmotizer:
+    Same as Step 3 but leave "Erase before flashing" UNCHECKED
+
+  Option B — OTA from web UI (firmware only, no filesystem):
+    System tab → Firmware Update → upload  .pio\build\nodemcuv2\firmware.bin
+    (filesystem stays unchanged — good for code-only updates)
+
+
+────────────────────────────────────────────────────────────────────────────────
+FULL ONE-LINER (copy-paste into terminal from the firmware/ folder)
+────────────────────────────────────────────────────────────────────────────────
+
+  Build + merge in one command:
+
+    %USERPROFILE%\.platformio\penv\Scripts\pio.exe run && %USERPROFILE%\.platformio\penv\Scripts\pio.exe run --target buildfs && %USERPROFILE%\.platformio\penv\Scripts\python.exe %USERPROFILE%\.platformio\packages\tool-esptoolpy\esptool.py --chip esp8266 merge_bin --flash_mode dio --flash_freq 80m --flash_size 4MB -o elmahdy-relay-full.bin 0x000000 .pio\build\nodemcuv2\firmware.bin 0x200000 .pio\build\nodemcuv2\littlefs.bin
+
+
+────────────────────────────────────────────────────────────────────────────────
+DIRECT FLASH VIA COMMAND LINE (no Tasmotizer needed)
+────────────────────────────────────────────────────────────────────────────────
+
+  Erase flash first (first-time only):
+    %USERPROFILE%\.platformio\penv\Scripts\pio.exe run --target erase --upload-port COM3
+
+  Flash firmware + filesystem separately:
+    %USERPROFILE%\.platformio\penv\Scripts\pio.exe run --target upload --upload-port COM3
+    %USERPROFILE%\.platformio\penv\Scripts\pio.exe run --target uploadfs --upload-port COM3
+
+  Or flash the merged file directly:
+    %USERPROFILE%\.platformio\penv\Scripts\python.exe ^
+      %USERPROFILE%\.platformio\packages\tool-esptoolpy\esptool.py ^
+      --chip esp8266 --port COM3 --baud 460800 ^
+      write_flash 0x0 elmahdy-relay-full.bin
+
+
+================================================================================

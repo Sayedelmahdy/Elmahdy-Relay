@@ -1,9 +1,10 @@
-var CACHE_NAME = "elmahdy-relay-v1";
+var CACHE_NAME = "elmahdy-relay-v4";
 var APP_SHELL = [
   "/",
   "/index.html",
   "/style.css",
   "/app.js",
+  "/frontend_patch.js",
   "/manifest.json",
   "/lang_ar.json",
   "/lang_en.json"

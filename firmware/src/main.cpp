@@ -35,6 +35,7 @@
 #include "web_server.h"
 #include "timer_engine.h"    // T032/T033/T034
 #include "mqtt_manager.h"   // T027
+#include "wifi_manager.h"   // T011
 
 #include "scene_manager.h"
 
@@ -68,6 +69,146 @@ TimerEngine      timerEngine;
 
 // MQTT client manager (T027)
 MqttManager      mqttManager;
+
+// Minimal Tasmotizer/Tasmota serial compatibility for first-time Wi-Fi setup.
+static String tasmotizerLineBuffer;
+static String tasmotizerPendingSsid;
+static String tasmotizerPendingPassword;
+static bool   tasmotizerHasSsid     = false;
+static bool   tasmotizerHasPassword = false;
+
+static bool   relayStateDirty = false;
+
+static String stripOptionalQuotes(String value) {
+    value.trim();
+    if (value.length() >= 2) {
+        const char first = value.charAt(0);
+        const char last  = value.charAt(value.length() - 1);
+        if ((first == '"' && last == '"') || (first == '\'' && last == '\'')) {
+            value = value.substring(1, value.length() - 1);
+        }
+    }
+    return value;
+}
+
+static void printTasmotizerIpAddress() {
+    IPAddress ip(0, 0, 0, 0);
+    if (WiFi.status() == WL_CONNECTED) {
+        ip = WiFi.localIP();
+    }
+
+    Serial.print(F("IPAddress1 ("));
+    Serial.print(ip.toString());
+    Serial.println(F(")"));
+}
+
+static void saveTasmotizerWifiConfig() {
+    if (!tasmotizerHasSsid || !tasmotizerHasPassword) {
+        return;
+    }
+
+    JsonDocument& wifiDoc = configManager.wifiConfigMut();
+    wifiDoc["ssid"] = tasmotizerPendingSsid;
+    wifiDoc["password"] = tasmotizerPendingPassword;
+    wifiDoc["dhcp"] = true;
+    wifiDoc["staticIp"] = wifiDoc["staticIp"] | "192.168.1.50";
+    wifiDoc["gateway"] = wifiDoc["gateway"] | "192.168.1.1";
+    wifiDoc["subnet"] = wifiDoc["subnet"] | "255.255.255.0";
+    wifiDoc["dns"] = wifiDoc["dns"] | "8.8.8.8";
+
+    if (configManager.saveWifi()) {
+        Serial.println(F("WiFi config saved"));
+        wifiManager.connectSTA(tasmotizerPendingSsid.c_str(),
+                               tasmotizerPendingPassword.c_str());
+        tasmotizerHasSsid = false;
+        tasmotizerHasPassword = false;
+    } else {
+        Serial.println(F("WiFi config save failed"));
+    }
+}
+
+static void handleTasmotizerCommand(String command) {
+    command.trim();
+    if (command.length() == 0) {
+        return;
+    }
+
+    const int separator = command.indexOf(' ');
+    String name = separator >= 0 ? command.substring(0, separator) : command;
+    String value = separator >= 0 ? command.substring(separator + 1) : "";
+    name.trim();
+    value = stripOptionalQuotes(value);
+
+    if (name.equalsIgnoreCase("IPAddress1") ||
+        name.equalsIgnoreCase("IPAddress")) {
+        printTasmotizerIpAddress();
+        return;
+    }
+
+    if (name.equalsIgnoreCase("SSID1") || name.equalsIgnoreCase("SSID")) {
+        tasmotizerPendingSsid = value;
+        tasmotizerHasSsid = value.length() > 0;
+        Serial.print(F("SSID1 ("));
+        Serial.print(tasmotizerPendingSsid);
+        Serial.println(F(")"));
+        return;
+    }
+
+    if (name.equalsIgnoreCase("Password1") ||
+        name.equalsIgnoreCase("Password")) {
+        tasmotizerPendingPassword = value;
+        tasmotizerHasPassword = true;
+        Serial.println(F("Password1 (****)"));
+        return;
+    }
+
+    if (name.equalsIgnoreCase("Restart")) {
+        Serial.println(F("Restarting"));
+        ESP.restart();
+    }
+}
+
+static void handleTasmotizerLine(String line) {
+    line.trim();
+    if (line.length() == 0) {
+        return;
+    }
+
+    if (line.length() >= 7 && line.substring(0, 7).equalsIgnoreCase("backlog")) {
+        line = line.substring(7);
+        line.trim();
+    }
+
+    int start = 0;
+    while (start < static_cast<int>(line.length())) {
+        const int end = line.indexOf(';', start);
+        String command = end >= 0 ? line.substring(start, end) : line.substring(start);
+        handleTasmotizerCommand(command);
+        if (end < 0) {
+            break;
+        }
+        start = end + 1;
+    }
+
+    saveTasmotizerWifiConfig();
+}
+
+static void tickTasmotizerSerial() {
+    while (Serial.available() > 0) {
+        const char c = static_cast<char>(Serial.read());
+        if (c == '\r' || c == '\n') {
+            handleTasmotizerLine(tasmotizerLineBuffer);
+            tasmotizerLineBuffer = "";
+            continue;
+        }
+
+        if (tasmotizerLineBuffer.length() < 191) {
+            tasmotizerLineBuffer += c;
+        } else {
+            tasmotizerLineBuffer = "";
+        }
+    }
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Modules not yet implemented — global instances will be added here when each
@@ -110,6 +251,10 @@ void setup() {
     Serial.println(WiFi.macAddress());
     Serial.print(F("Chip ID          : 0x"));
     Serial.println(ESP.getChipId(), HEX);
+    Serial.print(F("Reset reason     : "));
+    Serial.println(ESP.getResetReason());
+    Serial.print(F("Reset info       : "));
+    Serial.println(ESP.getResetInfo());
     Serial.print(F("Flash size       : "));
     Serial.print(ESP.getFlashChipSize() / 1024);
     Serial.println(F(" KB"));
@@ -155,6 +300,7 @@ void setup() {
     // ── T027 — MqttManager ─────────────────────────────────────────────────────
     Serial.println(F("[main] Initialising MqttManager..."));
     mqttManager.begin(configManager, relayController);
+    webServer.setMqttManager(mqttManager);
 
     // ── T032/T033/T034 — TimerEngine ─────────────────────────────────────────
     // Wire expiry callback: fires the relay and broadcasts the updated state.
@@ -193,9 +339,10 @@ void setup() {
     Serial.println(F("[main] Initialising BuzzerController..."));
     buzzerController.begin(configManager);
 
-    // Wire relay state change → short buzzer beep
-    relayController.setOnStateChange([](uint8_t /*id*/, bool /*state*/) {
-        buzzerController.beepShort();
+    // Wire relay state change → short buzzer beep (debounced in loop)
+    relayController.setOnStateChange([](uint8_t id, bool state) {
+        mqttManager.publishRelayState(id, state);
+        relayStateDirty = true;
     });
 
     // ── T052 — LEDController ──────────────────────────────────────────────────
@@ -221,6 +368,8 @@ void setup() {
 // ─────────────────────────────────────────────────────────────────────────────
 
 void loop() {
+    tickTasmotizerSerial();
+
     // ── RelayController ───────────────────────────────────────────────────────
     // Checks active pulse-mode timers and calls setState(ch, false) for any
     // channel whose pulseDuration has elapsed.  O(MAX_CHANNELS) millis() reads.
@@ -230,6 +379,7 @@ void loop() {
     // Calls AsyncWebSocket::cleanupClients() to reclaim slots held by
     // disconnected clients.  Must run regularly to prevent the client table
     // from filling with stale entries under high connect/disconnect churn.
+    webSocketHandler.setMqttConnected(mqttManager.isConnected());
     webSocketHandler.tick();
 
     // ── T011 — wifiManager.tick() ────────────────────────────────────────────
@@ -256,4 +406,11 @@ void loop() {
 
     // ── T053 — Reset button ───────────────────────────────────────────────────
     resetHandler.tick();
+
+    // ── Debounced Broadcast & Buzzer ──────────────────────────────────────────
+    if (relayStateDirty) {
+        relayStateDirty = false;
+        webSocketHandler.broadcastState();
+        buzzerController.beepShort();
+    }
 }

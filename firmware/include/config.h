@@ -86,6 +86,7 @@ static const uint8_t BOOT_SENSITIVE_GPIO_COUNT =
 #define MAX_TIMERS      8    // Maximum concurrent countdown/scheduled timers
 #define MAX_SCENES     10    // Maximum stored scene presets
 #define MAX_WS_CLIENTS  4    // Maximum concurrent WebSocket connections
+#define RELAY_STAGGER_MS 50  // ms between relay switching in bulk mode (prevents surge)
 
 /* -------------------------------------------------------------------------
  * Runtime defaults

@@ -1,7 +1,6 @@
 {
   "app.title": "تحكم الريلي الذكي",
   "app.name": "Elmahdy Relay",
-
   "tab.dashboard": "لوحة التحكم",
   "tab.wifi": "الواي فاي",
   "tab.mqtt": "MQTT",
@@ -18,13 +17,11 @@
   "nav.scenes": "المشاهد",
   "nav.system": "النظام",
   "nav.about": "حول",
-
   "relay.on": "تشغيل",
   "relay.off": "إيقاف",
   "relay.toggle": "تبديل",
   "relay.allOn": "تشغيل الكل",
   "relay.allOff": "إيقاف الكل",
-
   "relays.title": "إعدادات الريلي",
   "relays.channelCount": "عدد القنوات",
   "relays.saveCount": "تطبيق",
@@ -32,6 +29,8 @@
   "relays.gpio": "رقم GPIO",
   "relays.name": "الاسم",
   "relays.namePlaceholder": "اسم القناة",
+  "relays.rename": "تعديل الاسم",
+  "relays.saveName": "حفظ الاسم",
   "relays.powerOnState": "حالة التشغيل",
   "relays.powerOnLast": "آخر حالة",
   "relays.powerOnOn": "تشغيل دائم",
@@ -49,7 +48,6 @@
   "relays.gpioWarningPins": "الأرجل المتأثرة:",
   "relays.gpioConfirm": "تأكيد",
   "relays.gpioCancel": "إلغاء",
-
   "wifi.title": "إعداد الواي فاي",
   "wifi.ssid": "اسم الشبكة",
   "wifi.currentSsid": "الشبكة الحالية",
@@ -66,7 +64,6 @@
   "wifi.saved": "تم الاتصال بنجاح",
   "wifi.saveFailed": "فشل الاتصال",
   "wifi.noSsid": "الرجاء اختيار شبكة",
-
   "mqtt.title": "إعدادات MQTT",
   "mqtt.enable": "تفعيل MQTT",
   "mqtt.enabled": "تفعيل MQTT",
@@ -81,7 +78,7 @@
   "mqtt.save": "حفظ",
   "mqtt.saved": "تم الحفظ",
   "mqtt.saveFailed": "فشل الحفظ",
-
+  "mqtt.topicContract": "عقد المواضيع",
   "timer.title": "المؤقتات",
   "timer.newCountdown": "عد تنازلي جديد",
   "timer.newScheduled": "مجدول جديد",
@@ -112,7 +109,6 @@
   "timer.repeat.weekdays": "أيام الأسبوع",
   "timer.repeat.weekend": "عطلة نهاية الأسبوع",
   "timer.repeat.custom": "أيام مخصصة",
-
   "day.sun": "أحد",
   "day.mon": "إثنين",
   "day.tue": "ثلاثاء",
@@ -120,7 +116,6 @@
   "day.thu": "خميس",
   "day.fri": "جمعة",
   "day.sat": "سبت",
-
   "scene.title": "المشاهد",
   "scene.create": "إنشاء مشهد",
   "scene.name": "اسم المشهد",
@@ -139,7 +134,6 @@
   "scene.confirmDelete": "حذف هذا المشهد؟",
   "scene.saved": "تم الحفظ",
   "scene.saveFailed": "فشل الحفظ",
-
   "system.title": "إعدادات النظام",
   "system.hardware": "الأجهزة",
   "system.network": "الشبكة",
@@ -164,7 +158,6 @@
   "system.rebootConfirm": "هل تريد إعادة تشغيل الجهاز؟",
   "system.factoryReset": "إعادة ضبط المصنع",
   "system.factoryResetConfirm": "سيتم مسح جميع الإعدادات. هل أنت متأكد؟",
-
   "ota.title": "تحديث البرنامج",
   "ota.selectFile": "اختر ملف .bin",
   "ota.upload": "تحديث",
@@ -174,7 +167,6 @@
   "system.ota.uploading": "جارٍ التحديث...",
   "system.ota.success": "تم التحديث. جارٍ إعادة التشغيل...",
   "system.ota.failed": "فشل التحديث",
-
   "backup.title": "النسخ الاحتياطي",
   "backup.download": "تنزيل النسخة الاحتياطية",
   "backup.restore": "استعادة",
@@ -182,7 +174,6 @@
   "system.backup": "نسخ احتياطي",
   "system.restore": "استعادة",
   "system.restoreConfirm": "سيتم استبدال الإعدادات الحالية. هل أنت متأكد؟",
-
   "about.title": "حول الجهاز",
   "about.name": "Elmahdy Relay",
   "about.tagline": "وحدة تحكم الريلي الذكية",
@@ -194,15 +185,26 @@
   "about.ipAddress": "عنوان IP",
   "about.hostname": "اسم الجهاز",
   "about.freeHeap": "الذاكرة المتاحة",
-
   "modal.confirmTitle": "تأكيد",
   "btn.confirm": "تأكيد",
   "btn.cancel": "إلغاء",
-
   "uptime": "وقت التشغيل",
   "rssi.label": "الإشارة",
   "ws.connected": "متصل",
   "ws.disconnected": "غير متصل",
   "lang.switchToEn": "EN",
-  "lang.switchToAr": "AR"
+  "lang.switchToAr": "AR",
+  "wifi.staticMode": "استخدام IP ثابت",
+  "wifi.staticIp": "IP ثابت",
+  "wifi.gateway": "البوابة",
+  "wifi.subnet": "قناع الشبكة",
+  "wifi.dns": "خادم DNS",
+  "wifi.apPassword": "كلمة مرور نقطة الإعداد",
+  "wifi.invalidIp": "تحقق من حقول IP الثابت.",
+  "system.mdnsEnabled": "mDNS (عنوان .local)",
+  "about.mdnsStatus": "حالة mDNS",
+  "about.mdnsUrl": "رابط لوحة التحكم",
+  "about.mdnsRunning": "يعمل",
+  "about.mdnsStopped": "مفعل ولا يعمل",
+  "about.mdnsDisabled": "معطل"
 }
